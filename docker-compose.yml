@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./apps/backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/backend/kora.db:/app/kora.db
+    env_file:
+      - .env
+    environment:
+      - WA_BRIDGE_URL=http://wa-bridge:8002
+
+  wa-bridge:
+    build: ./apps/wa-bridge
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    environment:
+      - BACKEND_URL=http://backend:8000/api/whatsapp/webhook
+    volumes:
+      - ./apps/wa-bridge/auth_info_baileys:/app/auth_info_baileys
+
+  frontend:
+    build: ./apps/frontend
+    ports:
+      - "5173:5173"

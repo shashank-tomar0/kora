@@ -1,0 +1,59 @@
+# Environment Files
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Dependency Directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# Build & Expo Directories
+.expo/
+dist/
+build/
+web-build/
+out/
+.next/
+
+# Logs & Temporary Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# WhatsApp Bridge Credentials & Auth Info
+apps/wa-bridge/auth_info_baileys/
+apps/wa-bridge/messages.log
+index.js.bak
+
+# Local Memory Vault & Script files
+apps/backend/memory_vault/
+replace_fonts.py
+tmp_script*.py
+fix_main.py
+
