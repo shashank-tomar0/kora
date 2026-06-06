@@ -1,7 +1,9 @@
-<div align="center">
-
 # 🌌 K O R A
-### *The Ultimate Agentic AI Student Companion & Control Center*
+### **The Agentic AI Student Life OS & Academic Companion**
+
+---
+
+<div align="center">
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React Native](https://img.shields.io/badge/React_Native-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://reactnative.dev)
@@ -9,32 +11,43 @@
 [![Google Gemini](https://img.shields.io/badge/Google_Gemini-8E75C2?style=for-the-badge&logo=googlegemini&logoColor=white)](https://deepmind.google/technologies/gemini/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://typescriptlang.org)
 [![SQLite](https://img.shields.io/badge/SQLite-07405E?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org)
+[![WebSockets](https://img.shields.io/badge/WebSockets-000000?style=for-the-badge&logo=socket.io&logoColor=white)](https://socket.io)
 
-**Kora** is an agentic AI co-pilot designed for university life. Inspired by Apple's design clean lines and premium fintech interfaces (Revolut, N26), it manages schedules, automates class-attendance logs, tracks roommate transactions, indexes syllabus materials via RAG, and conducts mock oral exams.
+**Kora** is an open-source, fully agentic student co-pilot designed to manage the chaos of college life. It features a premium high-contrast neobrutalist UI, offline-first local fallbacks, dynamic shared roommate ledgers, real-time speech synthesis, and an LLM-driven Second Brain.
 
-[Key Modules](#-key-modules) • [Architecture](#-architecture) • [Security & Dotenv](#-security--dotenv) • [Quickstart](#-local-quickstart) • [Verification Status](#-verification-status)
-
----
+[Key Features](#-core-capabilities) • [Architectural Marvel](#-system-architecture) • [Engineering Highlights](#-engineering-highlights-for-recruiters) • [Quickstart](#-local-quickstart) • [Code Health](#-production-code-health)
 
 </div>
 
-## ✨ Key Modules
+---
 
-| Module | Description | Vibe & Tech Stack |
-| :--- | :--- | :--- |
-| 📅 **Timetable & Attendance** | Auto-logs classes via OCR, tracks subject attendance, calculates safe bunk thresholds, and schedules auto-allocated study blocks. | `Expo Router`, `SQLite` |
-| 🤝 **Shared Roommate Ledger** | Split roommate bills manually or via OCR receipt scanning. Generates scannable dynamic UPI QR codes and handles settling. | `react-native-svg`, `FastAPI` |
-| 🧠 **Study Deck & Viva Arena** | Flashcard spaced repetition (SM-2 forgetting curve), P2P live battle duels, and mock oral exams using Gemini voice synthesis. | `expo-av`, `Google Gemini API` |
-| 🕸️ **Concept Map & Roadmaps** | Dynamic learning roadmaps generated from circulars and interactive visual concept maps rendered as SVGs. | `react-native-svg` |
-| 🎙️ **Live Lecture Sync** | Streams class audio in real-time via WebSockets to generate live transcripts and auto-extract homework deadlines. | `expo-av`, `WebSockets` |
-| 📊 **Weekly Report Cards** | Generates an AI-audited performance assessment summarizing study hours, budget health, and tips. | `FastAPI`, `Gemini Pro` |
-| 🔗 **Google Integration Hub** | Connects Google Classroom, Drive, and Gmail to auto-sync calendar deadlines and backup study materials. | `Google OAuth 2.0` |
+## 🚀 Core Capabilities
+
+### 📅 Attendance Heatmap & Predictions
+* **Attendance Ledger**: Live logs class sessions, calculates strict bunk limits, and estimates required lectures to stay above the 75% cutoff.
+* **Contribution Heatmap**: Renders a GitHub-style 20x5 activity grid representing lecture logs over the semester, providing visual feedback on attendance density.
+
+### 💳 Shared Roommate Ledger & UPI Settler
+* **OCR Bill Splitter**: Scans physical canteen and store receipts via FastAPI/Gemini to extract itemized costs.
+* **Instant Payments**: Integrates deep-linking to physical payment processors via universal `upi://pay?pa={vpa}&am={amount}` schemas with instant simulated confirmations inside the simulator sandbox.
+
+### 🧠 Whiteboard Scan to Second Brain RAG
+* **Multi-Target Ingestion**: Automatically detects whiteboard scans and prompts users to convert images either into active-recall flashcards or directly index them as markdown nodes in the Second Brain.
+* **Semantic Retrieval**: The backend indexes slide summaries into a SQLite-backed hierarchical memory vault, allowing semantic searches via chat commands.
+
+### 🎙️ Continuous active Voice Bridge
+* **Talk Freely (Hands-Free)**: Toggleable voice bridge that enables continuous voice calls without needing to tap to speak.
+* **Ref Synchronization**: Employs React Native reference patterns to bind callbacks without stale closures, automatically restarting audio capture 1.2 seconds after Kora's voice output ends.
+
+### 🏆 Gamified Student Standing
+* **XP Leveling**: Tracks daily student quests (e.g., studying before 6 AM, settling roommate debts) to award XP. Includes a neobrutalist leveling progress bar.
+* **Badges Grid**: Awards achievement badges (**Early Bird**, **Second Brain**, **Debt Free**, **Attendance Master**) based on automated database event watchers.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ System Architecture
 
-Kora is decoupled into a high-performance Python backend, a Baileys-based WhatsApp gateway, and a React Native cross-platform app:
+Kora is built using a decoupled architecture consisting of a high-performance Python backend, a Baileys-based WhatsApp gateway, and a React Native cross-platform app:
 
 ```mermaid
 graph TD
@@ -68,19 +81,29 @@ graph TD
 
 ---
 
-## 🔒 Security & Dotenv
+## 🛠️ Engineering Highlights (For Recruiters)
 
-In compliance with production security standards, Kora strictly separates keys and private student data from code:
-*   **Dotenv**: All API keys, credentials, and redirect endpoints are loaded from `.env` files.
-*   **Git Exclusion**: Root `.gitignore` ignores all local `.env` variables, the database file (`kora.db`), memory vault folder exports, and scanned WhatsApp session data (`auth_info_baileys/`).
+Kora was designed not just as a features-first app, but to solve real-world engineering constraints:
 
-To get started, reference `.env.example` at the root and create `apps/backend/.env` containing:
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-GOOGLE_CLIENT_ID=your_oauth_client_id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your_oauth_client_secret_here
-GOOGLE_REDIRECT_URI=http://localhost:8000/api/google/callback
-```
+### ⚡ Solving Stale React Closures in Event Listeners
+When executing continuous voice bridges inside React Native, Speech Synthesis callbacks (`onDone`, `onError`) initially captured stale state closures, failing to recognize when users toggled speech mode. 
+* **The Fix**: Abstracted state logic into an active `useRef` synchronization hook. This ensures callbacks always read the absolute latest toggle status without triggering costly component re-renders.
+
+### 📴 Offline-First Mock Fallbacks
+To support zero-network environments (like deep university basements with poor reception), Kora features a dual-layer client responder.
+* **The Fix**: Fetch calls intercept network errors or API timeouts to fallback to local SQLite queries and pseudo-randomized mockup data generators (e.g., seed-based hash generators for the Attendance heatmap grid).
+
+### 📈 Gemini Multimodal JSON Parsing
+The receipt OCR and whiteboard scanning services require structured data returned from the LLM. Standard prompts often leak markdown blocks or formatting.
+* **The Fix**: Implemented a custom validation wrapper inside `main.py` that strips markdown code fence boundaries (e.g. ````json ... ````) and runs recursive fallback regex validations before passing the JSON payload to python schema validators.
+
+---
+
+## 🔒 Security & Exclusions
+
+Kora implements industry-standard security boundaries:
+* **Dotenv isolation**: API tokens and client secrets are kept out of memory and injected at launch via `.env` files.
+* **Secure Exclusions**: `.gitignore` strictly protects sensitive session records, including `kora.db`, WhatsApp session secrets (`auth_info_baileys/`), and memory vault exports.
 
 ---
 
@@ -112,11 +135,11 @@ npx expo start
 
 ---
 
-## 🛡️ Verification Status
+## 📊 Production Code Health
 
-All codebase quality checks pass successfully:
+Kora is maintained under strict linting and compilation guidelines:
 
-*   **TypeScript Compilation**: `npx tsc --noEmit` in `apps/mobile` returns `0 errors`.
+*   **TypeScript Compilation**: `npx tsc --noEmit` in `apps/mobile` returns `0 errors` (type-safe).
 *   **Linter Checks**: `npm run lint` in `apps/mobile` returns `0 errors` (complies with ESLint and React guidelines).
 *   **Backend Syntax**: `python -m py_compile` returns `0 errors`.
 

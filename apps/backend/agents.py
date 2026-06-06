@@ -179,7 +179,71 @@ def parse_receipt_image(image_bytes, mime_type="image/jpeg"):
 def handle_chat_query_fallback(user_id, query_text):
     query_lower = query_text.lower().strip()
     
-    # 1. EXPENSE LOGGING FALLBACK
+    # 1.1. WHATSAPP LOG PULL FALLBACK
+    if any(keyword in query_lower for keyword in ["whatsapp", "wa message", "message from", "chat with", "what did", "pull", "show", "import"]):
+        contact = extract_contact_name(query_text)
+        if contact:
+            logs = get_whatsapp_chat_logs(contact)
+            reply = f"Here are your recent WhatsApp messages with {contact.title()}:\n\n{logs}\n\n(Local Fallback)"
+            action_block = "\n@ACTION\n{\n    \"action\": \"NONE\",\n    \"data\": {}\n}"
+            return reply + action_block
+
+    # 1.2. SEND WHATSAPP MESSAGE FALLBACK
+    if "whatsapp" in query_lower or query_lower.startswith("tell "):
+        to_contact = None
+        for name in ["rohit", "mom", "dad", "karan", "arjun"]:
+            if name in query_lower:
+                to_contact = name
+                break
+        if to_contact:
+            msg_text = query_text
+            if "saying" in query_lower:
+                msg_text = query_text.split("saying")[1].strip()
+            elif "that" in query_lower:
+                msg_text = query_text.split("that")[1].strip()
+            elif query_lower.startswith("tell " + to_contact):
+                msg_text = query_text[len("tell " + to_contact):].strip()
+                
+            reply = f"Okay, I'll send a WhatsApp message to {to_contact.title()} saying: \"{msg_text}\". (Local Fallback)"
+            action_block = f"""
+@ACTION
+{{
+    "action": "SEND_WHATSAPP",
+    "data": {{
+        "to": "{to_contact}",
+        "text": "{msg_text}"
+    }}
+}}"""
+            return reply + action_block
+
+    # 1.3. SEND EMAIL FALLBACK
+    if "email" in query_lower or "mail" in query_lower:
+        to_contact = None
+        for name in ["rohit", "mom", "dad", "karan", "arjun"]:
+            if name in query_lower:
+                to_contact = name
+                break
+        if to_contact:
+            msg_text = query_text
+            if "saying" in query_lower:
+                msg_text = query_text.split("saying")[1].strip()
+            elif "that" in query_lower:
+                msg_text = query_text.split("that")[1].strip()
+            
+            reply = f"Got it. I will email {to_contact.title()} on your behalf. (Local Fallback)"
+            action_block = f"""
+@ACTION
+{{
+    "action": "SEND_EMAIL",
+    "data": {{
+        "to": "{to_contact}",
+        "subject": "Message from Kora",
+        "body": "{msg_text}"
+    }}
+}}"""
+            return reply + action_block
+
+    # 1.4. EXPENSE LOGGING FALLBACK
     expense_match = re.search(r'(?:log|spent|spent\s+of|cost\s+of)\s*(?:₹|rs\.?|rupees)?\s*(\d+(?:\.\d+)?)\s*(?:rupees|rs)?\s*(?:at|from|for|on)?\s*([a-zA-Z0-9\s]+)', query_lower)
     if not expense_match:
         expense_match = re.search(r'log\s+([a-zA-Z0-9\s]+)\s+expense\s+of\s*(?:₹|rs\.?|rupees)?\s*(\d+(?:\.\d+)?)', query_lower)
@@ -287,6 +351,148 @@ def handle_chat_query_fallback(user_id, query_text):
     action_block = "\n@ACTION\n{\n    \"action\": \"NONE\",\n    \"data\": {}\n}"
     return reply + action_block
 
+# Helper functions for WhatsApp integrations
+def extract_contact_name(query_text: str) -> str:
+    import re
+    query_lower = query_text.lower()
+    # Patterns to match: "from rohit", "with mom", "chat of dad", "pull messages of arjun", "what did dad say"
+    patterns = [
+        r"messages?\s+from\s+([a-zA-Z0-9_\+\-]+)",
+        r"chat\s+with\s+([a-zA-Z0-9_\+\-]+)",
+        r"chat\s+of\s+([a-zA-Z0-9_\+\-]+)",
+        r"pull\s+(?:messages?|chat)\s+(?:from|with|of)?\s*([a-zA-Z0-9_\+\-]+)",
+        r"show\s+(?:messages?|chat)\s+(?:from|with|of)?\s*([a-zA-Z0-9_\+\-]+)",
+        r"whatsapp\s+(?:messages?|chat)\s+(?:from|with|of)?\s*([a-zA-Z0-9_\+\-]+)",
+        r"what\s+did\s+([a-zA-Z0-9_\+\-]+)\s+(?:say|message|send)"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            return match.group(1).strip()
+    return None
+
+def send_whatsapp_message(user_id: str, text: str):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT phone_number FROM users WHERE id=?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row["phone_number"]:
+            import requests
+            phone = "".join([c for c in row["phone_number"] if c.isdigit()])
+            if phone:
+                to_jid = f"{phone}@s.whatsapp.net"
+                if len(phone) == 10:
+                    to_jid = f"91{phone}@s.whatsapp.net"
+                
+                requests.post("http://localhost:8002/send", json={
+                    "to": to_jid,
+                    "text": text
+                }, timeout=3)
+                print(f"[WhatsApp Alert] Sent to {to_jid}: {text}")
+    except Exception as e:
+        print(f"[WhatsApp Alert] Failed to send message: {e}")
+
+def send_gmail_notification(user_id: str, subject: str, text: str, recipient: str = None) -> bool:
+    try:
+        # Import inside function to avoid circular dependencies
+        from main import get_valid_google_token
+        access_token = get_valid_google_token(user_id)
+        if not access_token:
+            print(f"[Gmail Alert Mock] No active Google link for {user_id}. Simulated Email:\nSubject: {subject}\nRecipient: {recipient or 'user'}\nBody:\n{text}")
+            return False
+            
+        if not recipient:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT email FROM users WHERE id=?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row["email"]:
+                recipient = row["email"]
+            else:
+                recipient = "student@kora.edu" # Fallback email if user profile lacks one
+                
+        from email.mime.text import MIMEText
+        import base64
+        import json
+        import urllib.request
+        
+        message = MIMEText(text)
+        message['to'] = recipient
+        message['subject'] = subject
+        
+        raw_b64 = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+        
+        req_data = json.dumps({
+            "raw": raw_b64
+        }).encode()
+        
+        req = urllib.request.Request(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            data=req_data,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            res = json.loads(r.read())
+            print(f"[Gmail Alert] Sent notification email to {recipient}: {res.get('id')}")
+            return True
+            
+    except Exception as e:
+        print(f"[Gmail Alert Error] Failed to send email to user {user_id}: {e}")
+        return False
+
+def get_whatsapp_chat_logs(contact_name_or_jid: str, limit: int = 10) -> str:
+    import os
+    log_path = r"c:\Users\dell\Desktop\kora\apps\wa-bridge\messages.log"
+    if not os.path.exists(log_path):
+        return "No WhatsApp message logs found."
+        
+    found_messages = []
+    contact_lower = contact_name_or_jid.lower()
+    
+    # Try finding associated phone number from DB
+    phone_number = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT phone_number FROM users WHERE LOWER(name) LIKE ?", (f"%{contact_lower}%",))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row["phone_number"]:
+            phone_number = "".join([c for c in row["phone_number"] if c.isdigit()])
+    except Exception as dbe:
+        print("DB error in get_whatsapp_chat_logs:", dbe)
+        
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        for line in lines:
+            line_lower = line.lower()
+            matched = False
+            if contact_lower in line_lower:
+                matched = True
+            elif phone_number and phone_number in line_lower:
+                matched = True
+                
+            if matched:
+                found_messages.append(line.strip())
+                
+        if not found_messages:
+            return f"No logged WhatsApp messages found for '{contact_name_or_jid}'."
+            
+        latest_msgs = found_messages[-limit:]
+        return "\n".join(latest_msgs)
+    except Exception as e:
+        return f"Error reading WhatsApp logs: {e}"
+
+
 # Agent 3: Chat Assistant & Orchestrator
 def handle_chat_query(user_id, query_text):
     try:
@@ -299,6 +505,15 @@ def handle_chat_query(user_id, query_text):
             memory_context = query_memory_vault(user_id, query_text)
         except Exception as me:
             print("Error querying memory vault:", me)
+            
+        # Extract WhatsApp logs context if user queries WhatsApp messages
+        whatsapp_log_context = ""
+        query_lower = query_text.lower()
+        if any(keyword in query_lower for keyword in ["whatsapp", "wa message", "message from", "chat with", "what did", "pull", "show", "import"]):
+            contact = extract_contact_name(query_text)
+            if contact:
+                logs = get_whatsapp_chat_logs(contact)
+                whatsapp_log_context = f"\n[RECENT WHATSAPP CHAT LOGS WITH {contact.upper()} FROM BRIDGE]:\n{logs}"
         
         prompt = f"""
         You are Kora, the advanced personal AI agent built to manage an Indian student's life.
@@ -307,13 +522,14 @@ def handle_chat_query(user_id, query_text):
         Here is the student's current database context (schedules, deadlines, expenses, profile):
         {json.dumps(context, indent=2)}
         {memory_context}
+        {whatsapp_log_context}
         
         Current local timestamp is: {datetime.now().strftime("%A, %Y-%m-%d %H:%M:%S")}
-        
-        INSTRUCTIONS:
+           INSTRUCTIONS:
         - Respond directly, concisely, and with a premium, helpful, non-robotic tone.
         - Review the `chat_history` context to remember previous user requests, WhatsApp updates, or conversations. If the user asks about something they previously messaged you on WhatsApp or in the app, look it up in the `chat_history` and answer accurately.
         - If the query text is a forwarded WhatsApp message containing a deadline, assignment, exam, quiz, class, extra lecture, or expense, you MUST proactively parse and schedule it immediately by outputting the correct CREATE_DEADLINE or CREATE_SCHEDULE action! Do not wait for the user to ask you to add it; if the text says it is scheduled, due, or incurred, log it now.
+        - If the user asks to pull out, show, import, or read messages from a specific WhatsApp chat, and the `[RECENT WHATSAPP CHAT LOGS WITH ...]` context is provided, you MUST format and print these messages in your chat response so the user can read them directly in the Kora chat.
         - Calculate relative days (like "tomorrow", "next Friday", "Wednesday") based on the current local timestamp day of the week.
         - Respond intelligently to attendance and bunking queries. If the student asks about bunking a class or their attendance statistics, check the `attendance` records (where each subject has `present` and `absent` counts), compute their current percentage (Present / (Present + Absent) * 100), compare it to the strict 75% threshold, and advise them on how many classes they can bunk safely or how many they need to attend. Keep the tone witty and encouraging!
         - To perform actions on the database, you must include a JSON block in your response starting with `@ACTION` on a new line, containing the action structure.
@@ -321,7 +537,7 @@ def handle_chat_query(user_id, query_text):
         The @ACTION schema is:
         @ACTION
         {{
-            "action": "CREATE_DEADLINE" | "CREATE_EXPENSE" | "CREATE_SCHEDULE" | "COMPLETE_DEADLINE" | "NONE",
+            "action": "CREATE_DEADLINE" | "CREATE_EXPENSE" | "CREATE_SCHEDULE" | "COMPLETE_DEADLINE" | "SYNC_GOOGLE_CALENDAR" | "SCAN_GMAIL" | "SYNC_CLASSROOM" | "SEND_WHATSAPP" | "SEND_EMAIL" | "NONE",
             "data": {{ ... }}
         }}
         
@@ -330,6 +546,11 @@ def handle_chat_query(user_id, query_text):
         - CREATE_EXPENSE: {{"amount": 120.0, "merchant": "...", "category": "MESS"|"CANTEEN"|..., "notes": "..."}}
         - CREATE_SCHEDULE: {{"subject": "...", "title": "Lecture"|"Lab", "day_of_week": 0..6, "time_start": "HH:MM", "time_end": "HH:MM", "room": "...", "professor": "..."}}
         - COMPLETE_DEADLINE: {{"title": "Exact title match of deadline to complete"}}
+        - SYNC_GOOGLE_CALENDAR: {{}} (Use this when user asks to push their classes or deadlines to Google Calendar, e.g. "sync to google calendar", "update my google calendar")
+        - SCAN_GMAIL: {{}} (Use this when user asks to scan, check, or sync their email inbox for assignments/deadlines, e.g. "scan my gmail", "check my college emails")
+        - SYNC_CLASSROOM: {{}} (Use this when user asks to fetch or sync assignments from Google Classroom, e.g. "sync classroom tasks", "get my classroom assignments")
+        - SEND_WHATSAPP: {{"to": "Mom"|"Rohit"|"+91...", "text": "..."}} (Use this when the user explicitly requests you to send a WhatsApp message to someone. Always output this action block when asked; the backend will resolve the name to a phone number dynamically, so do not say you cannot do it.)
+        - SEND_EMAIL: {{"to": "Mom"|"Rohit"|"email@domain.com", "subject": "...", "body": "..."}} (Use this when the user explicitly requests you to send an email to someone. Always output this action block when asked; the backend will resolve the name to an email dynamically, so do not say you cannot do it.)
         
         If no database action is needed, use action "NONE". Only include ONE action per response.
         
@@ -401,6 +622,8 @@ def execute_agent_action(user_id, action_data):
             ))
             conn.commit()
             print(f"Agent logged deadline: {data.get('title')}")
+            send_whatsapp_message(user_id, f"⏰ KORA UPDATE: I've added a new deadline: '{data.get('title')}' due on {data.get('due_at') or 'soon'}! 📚")
+            send_gmail_notification(user_id, f"Kora Update: New Deadline Added - {data.get('title')}", f"Hi Scholar,\n\nI have added a new deadline to your Kora study tracker:\n\n📌 Title: {data.get('title')}\n📅 Due Date: {data.get('due_at') or 'soon'}\n📚 Subject: {data.get('subject') or 'General'}\n🗂️ Type: {data.get('type', 'OTHER')}\n\nHappy studying!\n- Kora")
             try:
                 allocs = proactive_allocate_logic(user_id)
                 print(f"Proactive study allocator scheduled {allocs} blocks.")
@@ -429,6 +652,8 @@ def execute_agent_action(user_id, action_data):
             ))
             conn.commit()
             print(f"Agent logged expense: Rs. {data.get('amount')} at {data.get('merchant')}")
+            send_whatsapp_message(user_id, f"💸 KORA UPDATE: Logged an expense of ₹{data.get('amount')} at '{data.get('merchant')}' under category {category_upper}. 📊")
+            send_gmail_notification(user_id, f"Kora Update: Expense Logged - ₹{data.get('amount')}", f"Hi Scholar,\n\nI have logged a new expense:\n\n💸 Amount: ₹{data.get('amount')}\n📍 Merchant: {data.get('merchant', 'Unknown')}\n📂 Category: {category_upper}\n📝 Notes: {data.get('notes') or 'N/A'}\n\nKeep track of your budget!\n- Kora")
             
         elif action_type == "CREATE_SCHEDULE":
             cursor.execute("""
@@ -447,6 +672,8 @@ def execute_agent_action(user_id, action_data):
             ))
             conn.commit()
             print(f"Agent logged class: {data.get('subject')} on day {data.get('day_of_week')}")
+            send_whatsapp_message(user_id, f"📅 KORA UPDATE: Class '{data.get('subject')}' ({data.get('title')}) added to your timetable for day {data.get('day_of_week')} at {data.get('time_start')}! 🏫")
+            send_gmail_notification(user_id, f"Kora Update: Timetable Updated - {data.get('subject')}", f"Hi Scholar,\n\nI have added a new class to your timetable:\n\n📅 Subject: {data.get('subject')}\n📌 Title: {data.get('title', 'Lecture')}\n📆 Day: {data.get('day_of_week')}\n⏰ Time: {data.get('time_start')} - {data.get('time_end')}\n🏫 Room: {data.get('room') or 'N/A'}\n\nDon't miss it!\n- Kora")
             
         elif action_type == "COMPLETE_DEADLINE":
             cursor.execute("""
@@ -456,6 +683,8 @@ def execute_agent_action(user_id, action_data):
             """, (user_id, f"%{data.get('title', '').lower()}%"))
             conn.commit()
             print(f"Agent marked deadline complete: {data.get('title')}")
+            send_whatsapp_message(user_id, f"✅ KORA UPDATE: Marked deadline '{data.get('title')}' as complete! 🏆")
+            send_gmail_notification(user_id, f"Kora Update: Deadline Completed - {data.get('title')}", f"Hi Scholar,\n\nI have marked the following deadline as complete:\n\n✅ Title: {data.get('title')}\n\nKeep up the great work!\n- Kora")
             
         elif action_type == "SPLIT_EXPENSE":
             amount = float(data.get("amount", 0))
@@ -475,6 +704,201 @@ def execute_agent_action(user_id, action_data):
             ))
             conn.commit()
             print(f"Agent logged expense (full raw amount split): Rs. {amount:.2f} at {merchant}")
+            send_whatsapp_message(user_id, f"💸 KORA UPDATE: Logged a split expense of ₹{amount} at '{merchant}' split with {', '.join(people)}. 📊")
+            send_gmail_notification(user_id, f"Kora Update: Expense Split Logged - ₹{amount}", f"Hi Scholar,\n\nI have logged a split expense in your Kora dashboard:\n\n💸 Amount: ₹{amount:.2f}\n📍 Merchant: {merchant}\n👥 Split with: {', '.join(people)}\n\nCheck your balance sheet in the app!\n- Kora")
+            
+        elif action_type == "SYNC_GOOGLE_CALENDAR":
+            try:
+                from main import sync_google_calendar
+                res = sync_google_calendar(user_id)
+                print(f"[Agent Action] Calendar sync result: {res}")
+                send_whatsapp_message(user_id, f"🗓️ KORA UPDATE: Successfully synced your timetable classes and deadlines to Google Calendar! ✅")
+                send_gmail_notification(user_id, "Kora Update: Google Calendar Synced", f"Hi Scholar,\n\nI have successfully synced your Kora academic timetable and deadlines to your Google Calendar!\n\nCheck your Google Calendar app to see the updated events.\n- Kora")
+            except Exception as e:
+                print(f"[Agent Action] Calendar sync failed: {e}")
+                
+        elif action_type == "SCAN_GMAIL":
+            try:
+                import asyncio
+                from main import sync_gmail
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                async def run_scan():
+                    res = await sync_gmail(user_id)
+                    if res.get("status") == "synced":
+                        gmail_events = res.get("events", [])
+                        conn_db = get_db_connection()
+                        cursor_db = conn_db.cursor()
+                        added_count = 0
+                        for ev in gmail_events:
+                            due_date = ev.get("due_date")
+                            if due_date:
+                                cursor_db.execute("SELECT id FROM deadlines WHERE user_id=? AND title=?", (user_id, ev["subject"]))
+                                if not cursor_db.fetchone():
+                                    due_at = f"{due_date} 23:59:59"
+                                    cursor_db.execute("""
+                                    INSERT INTO deadlines (id, user_id, title, due_at, subject, type, status)
+                                    VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+                                    """, (
+                                        str(uuid.uuid4()),
+                                        user_id,
+                                        ev["subject"],
+                                        due_at,
+                                        ev.get("course", "General"),
+                                        ev.get("type", "ASSIGNMENT")
+                                    ))
+                                    added_count += 1
+                        conn_db.commit()
+                        conn_db.close()
+                        print(f"[Agent Action] Scanned Gmail and automatically added {added_count} new deadlines.")
+                        send_whatsapp_message(user_id, f"📧 KORA UPDATE: Finished scanning your college Gmail. Automatically scheduled {added_count} new academic deadlines. 🧠")
+                        send_gmail_notification(user_id, f"Kora Update: Gmail Scan Completed", f"Hi Scholar,\n\nI have finished scanning your college Gmail inbox and automatically added {added_count} new deadlines to your Kora dashboard.\n\nKeep track of them in the app!\n- Kora")
+                
+                if loop.is_running():
+                    asyncio.create_task(run_scan())
+                else:
+                    loop.run_until_complete(run_scan())
+            except Exception as e:
+                print(f"[Agent Action] Gmail scan/schedule failed: {e}")
+                
+        elif action_type == "SYNC_CLASSROOM":
+            try:
+                import asyncio
+                from main import sync_classroom
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                async def run_classroom_sync():
+                    res = await sync_classroom(user_id)
+                    if res.get("status") == "synced":
+                        assignments = res.get("assignments", [])
+                        conn_db = get_db_connection()
+                        cursor_db = conn_db.cursor()
+                        added_count = 0
+                        for asn in assignments:
+                            due_date = asn.get("due_date")
+                            if due_date:
+                                cursor_db.execute("SELECT id FROM deadlines WHERE user_id=? AND title=?", (user_id, asn["title"]))
+                                if not cursor_db.fetchone():
+                                    due_at = f"{due_date} 23:59:59"
+                                    cursor_db.execute("""
+                                    INSERT INTO deadlines (id, user_id, title, due_at, subject, type, status)
+                                    VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+                                    """, (
+                                        str(uuid.uuid4()),
+                                        user_id,
+                                        asn["title"],
+                                        due_at,
+                                        asn.get("course", "General"),
+                                        "ASSIGNMENT"
+                                    ))
+                                    added_count += 1
+                        conn_db.commit()
+                        conn_db.close()
+                        print(f"[Agent Action] Synced Classroom and added {added_count} new assignments.")
+                        send_whatsapp_message(user_id, f"🏫 KORA UPDATE: Synced Google Classroom and added {added_count} new coursework assignments to your task list. 📚")
+                        send_gmail_notification(user_id, "Kora Update: Google Classroom Synced", f"Hi Scholar,\n\nI have synced your Google Classroom coursework assignments. Automatically imported {added_count} new coursework tasks to your Kora tracker.\n\nHappy learning!\n- Kora")
+                
+                if loop.is_running():
+                    asyncio.create_task(run_classroom_sync())
+                else:
+                    loop.run_until_complete(run_classroom_sync())
+            except Exception as e:
+                print(f"[Agent Action] Classroom sync/schedule failed: {e}")
+                
+        elif action_type == "SEND_WHATSAPP":
+            to_contact = data.get("to")
+            message_text = data.get("text")
+            to_jid = None
+            if to_contact:
+                if "@s.whatsapp.net" in to_contact:
+                    to_jid = to_contact
+                else:
+                    digits = "".join([c for c in to_contact if c.isdigit()])
+                    if len(digits) >= 10:
+                        if len(digits) == 10:
+                            to_jid = f"91{digits}@s.whatsapp.net"
+                        else:
+                            to_jid = f"{digits}@s.whatsapp.net"
+                    else:
+                        conn_db = get_db_connection()
+                        cursor_db = conn_db.cursor()
+                        cursor_db.execute("SELECT phone_number FROM users WHERE LOWER(name) LIKE ?", (f"%{to_contact.lower()}%",))
+                        user_row = cursor_db.fetchone()
+                        conn_db.close()
+                        if user_row and user_row["phone_number"]:
+                            ph = "".join([c for c in user_row["phone_number"] if c.isdigit()])
+                            if len(ph) == 10:
+                                to_jid = f"91{ph}@s.whatsapp.net"
+                            else:
+                                to_jid = f"{ph}@s.whatsapp.net"
+                                
+            if to_jid is None and to_contact:
+                # Resolve from recent WhatsApp messages log
+                import os, re
+                log_path = r"c:\Users\dell\Desktop\kora\apps\wa-bridge\messages.log"
+                if os.path.exists(log_path):
+                    try:
+                        with open(log_path, "r", encoding="utf-8") as f:
+                            lines = f.readlines()
+                        contact_lower = to_contact.lower()
+                        for line in reversed(lines):
+                            match = re.search(r"\]\s+([^(\n]+)\s+\(([^)]+)\):", line)
+                            if match:
+                                sender_name = match.group(1).strip().lower()
+                                sender_jid = match.group(2).strip()
+                                if contact_lower in sender_name:
+                                    to_jid = sender_jid
+                                    print(f"[Contact Resolution] Resolved '{to_contact}' from messages.log to '{to_jid}'")
+                                    break
+                    except Exception as le:
+                        print("Error resolving contact JID from log:", le)
+                                
+            if to_jid and message_text:
+                try:
+                    import requests
+                    requests.post("http://localhost:8002/send", json={
+                        "to": to_jid,
+                        "text": message_text
+                    }, timeout=3)
+                    print(f"[Agent Action] Sent WhatsApp message to {to_jid}: {message_text}")
+                except Exception as e:
+                    print(f"[Agent Action] Failed to send WhatsApp message: {e}")
+                    
+        elif action_type == "SEND_EMAIL":
+            to_contact = data.get("to")
+            subject = data.get("subject", "Message from Kora Assistant")
+            body = data.get("body", "")
+            
+            recipient_email = None
+            if to_contact:
+                if "@" in to_contact:
+                    recipient_email = to_contact
+                else:
+                    conn_db = get_db_connection()
+                    cursor_db = conn_db.cursor()
+                    cursor_db.execute("SELECT email FROM users WHERE LOWER(name) LIKE ?", (f"%{to_contact.lower()}%",))
+                    user_row = cursor_db.fetchone()
+                    conn_db.close()
+                    if user_row and user_row["email"]:
+                        recipient_email = user_row["email"]
+            
+            if not recipient_email:
+                recipient_email = to_contact or "student@kora.edu"
+                
+            if recipient_email and body:
+                success = send_gmail_notification(user_id, subject, body, recipient=recipient_email)
+                if success:
+                    print(f"[Agent Action] Sent Email to {recipient_email} with subject '{subject}'")
+                else:
+                    print(f"[Agent Action] Failed to send Email to {recipient_email}")
             
     except Exception as e:
         print(f"Error executing agent database action: {e}")

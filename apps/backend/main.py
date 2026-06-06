@@ -72,9 +72,10 @@ class WhatsAppWebhookRequest(BaseModel):
 
 class SplitRequest(BaseModel):
     user_id: str = None
-    borrower_email_or_name: str
+    friend: str
     amount: float
     description: str = None
+    type: str = "lent"
 
 class PomodoroRequest(BaseModel):
     user_id: str
@@ -1522,17 +1523,24 @@ def get_secretarial_query(query: str, user_id: str = None):
         context = get_student_context(uid)
         model = get_gemini_model()
         
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM users WHERE id = ?", (uid,))
+        user_row = cursor.fetchone()
+        conn.close()
+        user_name = user_row["name"] if user_row else "Arjun"
+        
         prompt = f"""
-        You are Kora, the assistant for student Arjun.
-        Someone is asking Arjun a question on WhatsApp:
+        You are Kora, the assistant for student {user_name}.
+        Someone is asking {user_name} a question on WhatsApp:
         "{query}"
         
-        Here is Arjun's current schedule, academic, and deadline database context:
+        Here is {user_name}'s current schedule, academic, and deadline database context:
         {json.dumps(context, indent=2)}
         
         INSTRUCTIONS:
-        - If the query is related to Arjun's classes, timetable, exams, deadlines, or syllabus, reply politely with the correct information from the database context.
-        - Answer in the first person on behalf of the assistant: e.g. "Arjun's next class is..." or "Arjun has a deadline..."
+        - If the query is related to {user_name}'s classes, timetable, exams, deadlines, or syllabus, reply politely with the correct information from the database context.
+        - Answer in the first person on behalf of the assistant: e.g. "{user_name}'s next class is..." or "{user_name} has a deadline..."
         - Keep the answer brief, friendly, helpful, and under 50 words.
         - If the query is just a social greeting or unrelated to schedule/deadlines, reply with "NONE" (no action needed).
         """
@@ -1634,52 +1642,88 @@ def split_expense(req: SplitRequest):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Try to find borrower user by email or name
-    cursor.execute("SELECT id FROM users WHERE email = ? OR name LIKE ?", (req.borrower_email_or_name, f"%{req.borrower_email_or_name}%"))
-    borrower = cursor.fetchone()
-    if not borrower:
-        # Check lender email to assign correct opposite demo user
+    # Try to find friend user by email or name
+    cursor.execute("SELECT id FROM users WHERE email = ? OR name LIKE ?", (req.friend, f"%{req.friend}%"))
+    friend_row = cursor.fetchone()
+    if not friend_row:
+        # Check current user's email to assign correct opposite demo user
         cursor.execute("SELECT email FROM users WHERE id = ?", (uid,))
-        lender_row = cursor.fetchone()
-        lender_email = lender_row["email"] if lender_row else ""
+        user_row = cursor.fetchone()
+        user_email = user_row["email"] if user_row else ""
         
-        if lender_email == "karan.verma.cs@iitm.ac.in":
-            # Lender is Karan Verma, so borrower should be Arjun Sharma
+        if user_email == "karan.verma.cs@iitm.ac.in":
+            # Current user is Karan Verma, so friend should be Arjun Sharma
             cursor.execute("SELECT id FROM users WHERE email = 'arjun.sharma.iitm@gmail.com'")
             arjun = cursor.fetchone()
             if arjun:
-                borrower_id = arjun["id"]
+                friend_id = arjun["id"]
             else:
-                borrower_id = str(uuid.uuid4())
+                friend_id = str(uuid.uuid4())
                 cursor.execute("""
                 INSERT INTO users (id, phone_number, name, email, college, branch, year)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (borrower_id, "+919999999999", "Arjun Sharma", "arjun.sharma.iitm@gmail.com", "IIT Madras", "Computer Science", 3))
+                """, (friend_id, "+919999999999", "Arjun Sharma", "arjun.sharma.iitm@gmail.com", "IIT Madras", "Computer Science", 3))
                 conn.commit()
         else:
-            # Lender is Arjun or another user, so borrower should be Karan Verma
+            # Current user is Arjun or another user, so friend should be Karan Verma
             cursor.execute("SELECT id FROM users WHERE email = 'karan.verma.cs@iitm.ac.in'")
             karan = cursor.fetchone()
             if karan:
-                borrower_id = karan["id"]
+                friend_id = karan["id"]
             else:
-                borrower_id = str(uuid.uuid4())
+                friend_id = str(uuid.uuid4())
                 cursor.execute("""
                 INSERT INTO users (id, phone_number, name, email, college, branch, year)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (borrower_id, "+919876543210", "Karan Verma", "karan.verma.cs@iitm.ac.in", "IIT Madras", "Computer Science", 3))
+                """, (friend_id, "+919876543210", "Karan Verma", "karan.verma.cs@iitm.ac.in", "IIT Madras", "Computer Science", 3))
                 conn.commit()
     else:
-        borrower_id = borrower["id"]
+        friend_id = friend_row["id"]
         
+    # Determine who is lender and who is borrower
+    if req.type == "borrowed":
+        lender_id = friend_id
+        borrower_id = uid
+    else: # "lent"
+        lender_id = uid
+        borrower_id = friend_id
+
     balance_id = str(uuid.uuid4())
     cursor.execute("""
     INSERT INTO user_balances (id, lender_id, borrower_id, amount, description, status)
     VALUES (?, ?, ?, ?, ?, 'PENDING')
-    """, (balance_id, uid, borrower_id, req.amount, req.description))
+    """, (balance_id, lender_id, borrower_id, req.amount, req.description))
+    
+    # Fetch details for notification
+    cursor.execute("SELECT name FROM users WHERE id = ?", (lender_id,))
+    l_row = cursor.fetchone()
+    lender_name = l_row["name"] if l_row else "Someone"
+    
+    cursor.execute("SELECT name, phone_number FROM users WHERE id = ?", (borrower_id,))
+    b_row = cursor.fetchone()
+    borrower_phone = b_row["phone_number"] if b_row else None
+    
     conn.commit()
     conn.close()
+    
+    if borrower_phone:
+        try:
+            import requests
+            clean_phone = "".join([c for c in borrower_phone if c.isdigit()])
+            if clean_phone:
+                to_jid = f"{clean_phone}@s.whatsapp.net"
+                desc_str = f" for '{req.description}'" if req.description else ""
+                alert_msg = f"💸 KORA SPLIT ALERT: {lender_name} split an expense of \u20b9{req.amount}{desc_str} with you. Your share is \u20b9{req.amount}. Log into Kora to clear it!"
+                print(f"Proactive split expense alert: sending to {to_jid}...")
+                requests.post("http://localhost:8002/send", json={
+                    "to": to_jid,
+                    "text": alert_msg
+                }, timeout=3)
+        except Exception as we:
+            print("Failed to send WhatsApp split alert:", we)
+            
     return {"message": "Split recorded successfully", "balance_id": balance_id}
+
 
 @app.get("/api/expenses/balances")
 def get_user_balances(user_id: str = None):
@@ -1917,6 +1961,346 @@ def evaluate_viva(req: VivaEvaluateRequest):
         "xp_awarded": xp_awarded,
         "level_up": level_up
     }
+
+# ── AI Viva Session Endpoints ────────────────────────────────────
+
+class VivaStartRequest(BaseModel):
+    user_id: str = None
+    subject: str
+
+class VivaEvaluateSessionRequest(BaseModel):
+    user_id: str = None
+    subject: str
+    question: str
+    answer: str
+
+@app.post("/api/viva/start")
+def start_viva_session(req: VivaStartRequest):
+    uid = get_user_id(req.user_id)
+    try:
+        model = get_gemini_model()
+        prompt = f"""
+        You are an expert college professor conducting an oral exam (viva) for a student.
+        The subject is: {req.subject}
+        
+        Generate a challenging, conceptual, and clear oral exam question to test the student's knowledge on this subject.
+        Keep the question relatively brief (max 35 words). Do not include any introduction or options, just the question itself.
+        """
+        response = model.generate_content(prompt)
+        question = response.text.strip()
+    except Exception as e:
+        print(f"Gemini API error in start_viva_session: {e}")
+        question = f"Explain the working principle and primary application of: {req.subject}"
+        
+    return {"question": question}
+
+@app.post("/api/viva/evaluate")
+def evaluate_viva_session(req: VivaEvaluateSessionRequest):
+    uid = get_user_id(req.user_id)
+    try:
+        model = get_gemini_model()
+        prompt = f"""
+        You are an expert college professor conducting an oral exam (viva).
+        Evaluate the student's answer to the question below.
+        
+        Subject: {req.subject}
+        Question: {req.question}
+        Student's Answer: {req.answer}
+        
+        Evaluate the answer strictly but constructively. Give a score between 0 and 100 based on accuracy, completeness, and conceptual clarity.
+        Provide detailed constructive feedback pointing out what they got right, what they missed, and the correct concepts.
+        
+        Return ONLY a JSON block with keys:
+        - "score": (integer 0 to 100)
+        - "feedback": (constructive feedback string)
+        """
+        response = model.generate_content(prompt)
+        res_text = response.text.strip()
+        if "```json" in res_text:
+            res_text = res_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in res_text:
+            res_text = res_text.split("```")[1].split("```")[0].strip()
+        evaluation = json.loads(res_text)
+    except Exception as e:
+        print(f"Gemini API error in evaluate_viva_session: {e}")
+        evaluation = {
+            "score": 75,
+            "feedback": "Answer evaluated in sandbox mode. Satisfactory conceptual coverage. Recommended: Review technical terminology."
+        }
+        
+    score = int(evaluation.get("score", 70))
+    feedback = evaluation.get("feedback", "No feedback provided.")
+    
+    # Award some XP
+    xp_awarded = int(score / 5)  # e.g., if 85, award 17 XP
+    if xp_awarded > 0:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT xp, level FROM users WHERE id = ?", (uid,))
+        user_row = cursor.fetchone()
+        if user_row:
+            current_xp = (user_row["xp"] or 0) + xp_awarded
+            current_level = user_row["level"] or 1
+            xp_for_next_level = current_level * 100
+            while current_xp >= xp_for_next_level:
+                current_xp -= xp_for_next_level
+                current_level += 1
+                xp_for_next_level = current_level * 100
+            cursor.execute("UPDATE users SET xp = ?, level = ? WHERE id = ?", (current_xp, current_level, uid))
+        conn.commit()
+        conn.close()
+        
+    return {"score": score, "feedback": feedback}
+
+# ── Study Duels (Quiz Battles) Endpoints ──────────────────────
+
+class DuelCreateRequest(BaseModel):
+    user_id: str
+    name: str
+    subject: str
+
+class DuelJoinRequest(BaseModel):
+    user_id: str
+    room_id: str
+
+class DuelQuestionsRequest(BaseModel):
+    room_id: str
+    subject: str
+
+class DuelCompleteRequest(BaseModel):
+    user_id: str
+    room_id: str
+    score: int
+
+@app.get("/api/leaderboard")
+def get_leaderboard():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, name, college, branch, xp, level FROM users
+    ORDER BY xp DESC, level DESC
+    LIMIT 10
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    leaderboard = []
+    for i, r in enumerate(rows):
+        leaderboard.append({
+            "rank": i + 1,
+            "name": r["name"],
+            "college": r["college"] or "IIT Madras",
+            "xp": r["xp"] or 0,
+            "level": r["level"] or 1
+        })
+        
+    if len(leaderboard) < 5:
+        # Pad with competitive mock records
+        mock_data = [
+            {"name": "Karan Verma", "college": "IIT Madras", "xp": 450, "level": 3},
+            {"name": "Rahul Sharma", "college": "IIT Madras", "xp": 380, "level": 2},
+            {"name": "Priya Vyas", "college": "IIT Bombay", "xp": 210, "level": 2},
+            {"name": "Ananya Sen", "college": "BITS Pilani", "xp": 150, "level": 2}
+        ]
+        # Skip if name already exists
+        existing_names = {x["name"] for x in leaderboard}
+        for item in mock_data:
+            if item["name"] not in existing_names:
+                leaderboard.append({
+                    "rank": 0,
+                    "name": item["name"],
+                    "college": item["college"],
+                    "xp": item["xp"],
+                    "level": item["level"]
+                })
+        
+        # Sort and re-rank
+        leaderboard = sorted(leaderboard, key=lambda x: x["xp"], reverse=True)
+        for idx, item in enumerate(leaderboard):
+            item["rank"] = idx + 1
+            
+    return {"leaderboard": leaderboard[:10]}
+
+@app.get("/api/duels/active")
+def get_active_duels():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT q.id, q.creator_id, q.joiner_id, q.subject, q.status, u.name as creator_name
+    FROM quiz_duels q
+    JOIN users u ON q.creator_id = u.id
+    WHERE q.status = 'LOBBY' OR q.status = 'ACTIVE'
+    ORDER BY q.created_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    rooms = []
+    for r in rows:
+        rooms.append({
+            "id": r["id"],
+            "name": f"{r['creator_name']}'s Duel",
+            "subject": r["subject"],
+            "participants": 2 if r["joiner_id"] else 1,
+            "maxParticipants": 2,
+            "status": "waiting" if r["status"] == "LOBBY" else "active",
+            "host": r["creator_name"]
+        })
+    return {"rooms": rooms}
+
+@app.post("/api/duels/create")
+def create_duel_room(req: DuelCreateRequest):
+    uid = get_user_id(req.user_id)
+    room_id = f"room_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:6]}"
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO quiz_duels (id, creator_id, joiner_id, subject, status, questions_json, creator_score, joiner_score)
+    VALUES (?, ?, NULL, ?, 'LOBBY', '[]', 0, 0)
+    """, (room_id, uid, req.subject))
+    conn.commit()
+    conn.close()
+    return {"room_id": room_id}
+
+@app.post("/api/duels/join")
+def join_duel_room(req: DuelJoinRequest):
+    uid = get_user_id(req.user_id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT creator_id, status FROM quiz_duels WHERE id = ?", (req.room_id,))
+    room = cursor.fetchone()
+    if not room:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Room not found")
+        
+    if room["creator_id"] == uid:
+        conn.close()
+        return {"status": "success"} # creator re-joining
+        
+    cursor.execute("""
+    UPDATE quiz_duels
+    SET joiner_id = ?, status = 'ACTIVE'
+    WHERE id = ?
+    """, (uid, req.room_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+@app.post("/api/duels/questions")
+def get_duel_questions(req: DuelQuestionsRequest):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT questions_json, subject FROM quiz_duels WHERE id = ?", (req.room_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Room not found")
+        
+    questions_json = row["questions_json"]
+    subject = row["subject"]
+    
+    # If questions are already generated, return them
+    if questions_json and questions_json != "[]":
+        conn.close()
+        return {"questions": json.loads(questions_json)}
+        
+    # Generate 5 questions using Gemini
+    try:
+        model = get_gemini_model()
+        prompt = f"""
+        Generate exactly 5 multiple choice questions to test knowledge in the subject: {subject}.
+        Each question must be challenging and suitable for a college-level student quiz duel.
+        
+        Return ONLY a JSON list of questions, where each question is an object with:
+        - "text": (the question statement)
+        - "options": (a list of exactly 4 string options)
+        - "correctIndex": (an integer 0, 1, 2, or 3 representing the index of the correct option in the list)
+        
+        Ensure the JSON is strictly valid. Do not write markdown formatting outside of a ```json ``` block.
+        """
+        response = model.generate_content(prompt)
+        res_text = response.text.strip()
+        if "```json" in res_text:
+            res_text = res_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in res_text:
+            res_text = res_text.split("```")[1].split("```")[0].strip()
+        questions = json.loads(res_text)
+    except Exception as e:
+        print(f"Gemini API error in get_duel_questions: {e}")
+        # Default mock questions fallback
+        questions = [
+            {
+                "text": f"What is the primary concern when designing a system for {subject}?",
+                "options": ["Performance", "Security & Integrity", "Ease of Development", "Platform Compatibility"],
+                "correctIndex": 1
+            },
+            {
+                "text": f"Which of the following best describes a typical bottleneck in {subject}?",
+                "options": ["CPU cycle limitations", "Memory leaks and fragmentation", "Network latency and I/O wait", "All of the above"],
+                "correctIndex": 3
+            },
+            {
+                "text": f"Which protocol or pattern is most commonly used to ensure consistency in {subject}?",
+                "options": ["Two-Phase Commit (2PC)", "Saga Pattern", "Eventual Consistency / Raft", "Depends on architectural tradeoffs"],
+                "correctIndex": 3
+            }
+        ]
+        
+    # Save back to database
+    cursor.execute("UPDATE quiz_duels SET questions_json = ? WHERE id = ?", (json.dumps(questions), req.room_id))
+    conn.commit()
+    conn.close()
+    return {"questions": questions}
+
+@app.post("/api/duels/complete")
+def complete_duel(req: DuelCompleteRequest):
+    uid = get_user_id(req.user_id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT creator_id, joiner_id, status FROM quiz_duels WHERE id = ?", (req.room_id,))
+    room = cursor.fetchone()
+    if not room:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Room not found")
+        
+    is_creator = room["creator_id"] == uid
+    is_joiner = room["joiner_id"] == uid
+    
+    if is_creator:
+        cursor.execute("UPDATE quiz_duels SET creator_score = ? WHERE id = ?", (req.score, req.room_id))
+    elif is_joiner:
+        cursor.execute("UPDATE quiz_duels SET joiner_score = ? WHERE id = ?", (req.score, req.room_id))
+        
+    # Mark room completed
+    cursor.execute("UPDATE quiz_duels SET status = 'COMPLETED' WHERE id = ?", (req.room_id,))
+    conn.commit()
+    conn.close()
+    
+    # Award +150 XP for completing a duel
+    xp_awarded = 150
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT xp, level FROM users WHERE id = ?", (uid,))
+    user_row = cursor.fetchone()
+    level_up = False
+    if user_row:
+        current_xp = (user_row["xp"] or 0) + xp_awarded
+        current_level = user_row["level"] or 1
+        xp_for_next_level = current_level * 100
+        while current_xp >= xp_for_next_level:
+            current_xp -= xp_for_next_level
+            current_level += 1
+            level_up = True
+            xp_for_next_level = current_level * 100
+        cursor.execute("UPDATE users SET xp = ?, level = ? WHERE id = ?", (current_xp, current_level, uid))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success", "xp_awarded": xp_awarded, "level_up": level_up}
 
 class AttendanceRecordRequest(BaseModel):
     user_id: str = None
@@ -2807,6 +3191,62 @@ def ensure_google_tokens_table():
     conn.commit()
     conn.close()
 
+def get_valid_google_token(uid: str) -> str:
+    """Gets a valid Google access token. If expired, refreshes it using the refresh token."""
+    ensure_google_tokens_table()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT access_token, refresh_token, created_at FROM google_tokens WHERE user_id=?", (uid,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return ""
+    
+    access_token = row["access_token"]
+    refresh_token = row["refresh_token"]
+    created_at_str = row["created_at"]
+    
+    # Check if elapsed time is more than 50 minutes (3000 seconds)
+    try:
+        created_at = datetime.fromisoformat(created_at_str)
+        elapsed = (datetime.now() - created_at).total_seconds()
+    except Exception:
+        elapsed = 999999
+        
+    if elapsed > 3000 and refresh_token:
+        # Refresh the token
+        try:
+            import urllib.request, urllib.parse
+            token_data = urllib.parse.urlencode({
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token"
+            }).encode()
+            req = urllib.request.Request(
+                "https://oauth2.googleapis.com/token",
+                data=token_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                res = json.loads(r.read())
+            new_access_token = res.get("access_token")
+            if new_access_token:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE google_tokens SET access_token=?, created_at=? WHERE user_id=?",
+                    (new_access_token, datetime.now().isoformat(), uid)
+                )
+                conn.commit()
+                conn.close()
+                return new_access_token
+        except Exception as e:
+            print(f"[Google Auth] Failed to refresh token: {e}")
+            
+    return access_token
+
 def build_google_auth_url(scope: str, state: str) -> str:
     if not GOOGLE_CLIENT_ID:
         return ""
@@ -2871,7 +3311,80 @@ async def google_oauth_callback(code: str, state: str = "default"):
         conn.commit()
         conn.close()
         service = "Gmail" if "gmail" in state else "Drive" if "drive" in state else "Classroom"
-        return {"status": "connected", "service": service, "message": f"{service} connected successfully! ✅"}
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Kora Authorization Successful</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    background-color: #0A0A0A;
+                    color: #FDFDFD;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                    text-align: center;
+                    padding: 20px;
+                }}
+                .card {{
+                    background-color: #FDFDFD;
+                    color: #000000;
+                    border: 3px solid #000000;
+                    border-radius: 14px;
+                    padding: 30px;
+                    max-width: 400px;
+                    box-shadow: 8px 8px 0px #000000;
+                }}
+                h1 {{
+                    font-family: "Georgia", serif;
+                    font-size: 24px;
+                    margin-top: 0;
+                }}
+                p {{
+                    font-size: 16px;
+                    color: #48484A;
+                    line-height: 1.5;
+                }}
+                .btn {{
+                    display: inline-block;
+                    margin-top: 20px;
+                    padding: 12px 24px;
+                    background-color: #FF6F61;
+                    color: #000000;
+                    text-decoration: none;
+                    font-weight: bold;
+                    border: 2px solid #000000;
+                    border-radius: 8px;
+                    box-shadow: 4px 4px 0px #000000;
+                    transition: transform 0.1s;
+                }}
+                .btn:active {{
+                    transform: translate(2px, 2px);
+                    box-shadow: 2px 2px 0px #000000;
+                }}
+            </style>
+            <script>
+                setTimeout(function() {{
+                    window.location.href = "kora://";
+                }}, 1500);
+            </script>
+        </head>
+        <body>
+            <div class="card">
+                <h1>🎉 Authorization Successful!</h1>
+                <p>{service} has been linked to your Kora account successfully.</p>
+                <p>You can close this window or tap below if you are not automatically redirected.</p>
+                <a href="kora://" class="btn">RETURN TO KORA</a>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -2880,28 +3393,67 @@ async def sync_gmail(user_id: str = None):
     uid = get_user_id(user_id)
     ensure_google_tokens_table()
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_token FROM google_tokens WHERE user_id=?", (uid,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
+        token = get_valid_google_token(uid)
+        if not token:
             return {"status": "not_connected", "events": [], "message": "Connect Gmail first"}
         import urllib.request
         req = urllib.request.Request(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=subject:(exam OR assignment OR class OR schedule OR timetable)",
-            headers={"Authorization": f"Bearer {row['access_token']}"})
+            headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=10) as r:
             msgs = json.loads(r.read())
         events = []
         for m in (msgs.get("messages") or [])[:5]:
             mr = urllib.request.Request(
                 f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}?format=metadata&metadataHeaders=Subject&metadataHeaders=Date",
-                headers={"Authorization": f"Bearer {row['access_token']}"})
+                headers={"Authorization": f"Bearer {token}"})
             with urllib.request.urlopen(mr, timeout=10) as r2:
                 msg = json.loads(r2.read())
             hdrs = {h["name"]: h["value"] for h in msg.get("payload",{}).get("headers",[])}
             events.append({"id": m["id"], "subject": hdrs.get("Subject",""), "date": hdrs.get("Date",""), "snippet": msg.get("snippet","")})
+            
+        # Process emails using Gemini to extract structured student tasks
+        if events:
+            try:
+                model = get_gemini_model()
+                prompt = f"""
+                You are Kora's academic email reader.
+                Analyze the following unread university emails (list of subject, date, and snippet).
+                Categorize each email into one of these types: "ASSIGNMENT", "EXAM", "ANNOUNCEMENT", "FEE", "EVENT", or "OTHER".
+                If the email mentions a deadline, due date, or class date, extract it as `due_date` in YYYY-MM-DD format (infer relative dates like "tomorrow" or "next Monday" relative to today: {datetime.now().strftime("%Y-%m-%d")}). If no date is found, set `due_date` to null.
+                Summarize each email into a single, clean, actionable sentence.
+                Provide your response ONLY as a valid JSON array of objects with these keys:
+                - id (matches the email id provided)
+                - subject (the original subject)
+                - date (the original date)
+                - type (the uppercase category)
+                - summary (your 1-sentence actionable summary)
+                - due_date (YYYY-MM-DD or null)
+                - course (the associated subject/course name, e.g. "OS", "Math", "N/A" if general)
+
+                Emails list to process:
+                {json.dumps(events)}
+                """
+                response = model.generate_content(prompt)
+                text = response.text.strip()
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    text = text.split("```")[1].split("```")[0].strip()
+                processed = json.loads(text)
+                if isinstance(processed, list):
+                    # Map the fields so they fit existing UI: replace snippet with the summary
+                    for pe in processed:
+                        pe["snippet"] = pe.get("summary", "")
+                    events = processed
+            except Exception as ai_err:
+                print(f"[Gmail AI] Failed to process emails with Gemini: {ai_err}")
+                for ev in events:
+                    ev["summary"] = ev.get("snippet", "")
+                    ev["type"] = "ANNOUNCEMENT"
+                    ev["due_date"] = None
+                    ev["course"] = "N/A"
+                    
         return {"status": "synced", "events": events, "count": len(events)}
     except Exception as e:
         return {"status": "error", "error": str(e), "events": []}
@@ -2911,12 +3463,8 @@ async def upload_note_to_drive(user_id: str = Form(None), note_title: str = Form
     uid = get_user_id(user_id)
     ensure_google_tokens_table()
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_token FROM google_tokens WHERE user_id=?", (uid,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
+        token = get_valid_google_token(uid)
+        if not token:
             return {"status": "not_connected"}
         import urllib.request
         boundary = "kora12345"
@@ -2925,7 +3473,7 @@ async def upload_note_to_drive(user_id: str = Form(None), note_title: str = Form
                 f"\r\n--{boundary}\r\nContent-Type: text/plain\r\n\r\n".encode() + note_content.encode() +
                 f"\r\n--{boundary}--".encode())
         req = urllib.request.Request("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-            data=body, headers={"Authorization": f"Bearer {row['access_token']}",
+            data=body, headers={"Authorization": f"Bearer {token}",
             "Content-Type": f"multipart/related; boundary={boundary}"}, method="POST")
         with urllib.request.urlopen(req, timeout=15) as r:
             result = json.loads(r.read())
@@ -2938,17 +3486,13 @@ async def list_drive_notes(user_id: str = None):
     uid = get_user_id(user_id)
     ensure_google_tokens_table()
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_token FROM google_tokens WHERE user_id=?", (uid,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
+        token = get_valid_google_token(uid)
+        if not token:
             return {"status": "not_connected", "files": []}
         import urllib.request
         req = urllib.request.Request(
             "https://www.googleapis.com/drive/v3/files?q=mimeType='text/plain'&orderBy=modifiedTime+desc&pageSize=20",
-            headers={"Authorization": f"Bearer {row['access_token']}"})
+            headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=10) as r:
             result = json.loads(r.read())
         return {"status": "ok", "files": result.get("files", [])}
@@ -2960,17 +3504,13 @@ async def sync_classroom(user_id: str = None):
     uid = get_user_id(user_id)
     ensure_google_tokens_table()
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_token FROM google_tokens WHERE user_id=?", (uid,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
+        token = get_valid_google_token(uid)
+        if not token:
             return {"status": "not_connected", "courses": [], "assignments": []}
         import urllib.request
         req = urllib.request.Request(
             "https://classroom.googleapis.com/v1/courses?courseStates=ACTIVE&pageSize=10",
-            headers={"Authorization": f"Bearer {row['access_token']}"})
+            headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=10) as r:
             courses_data = json.loads(r.read())
         courses = courses_data.get("courses", [])
@@ -2979,7 +3519,7 @@ async def sync_classroom(user_id: str = None):
             try:
                 wk_req = urllib.request.Request(
                     f"https://classroom.googleapis.com/v1/courses/{course['id']}/courseWork?courseWorkStates=PUBLISHED&pageSize=5",
-                    headers={"Authorization": f"Bearer {row['access_token']}"})
+                    headers={"Authorization": f"Bearer {token}"})
                 with urllib.request.urlopen(wk_req, timeout=10) as r2:
                     work_data = json.loads(r2.read())
                 for cw in work_data.get("courseWork", []):
@@ -3008,6 +3548,174 @@ def google_connection_status(user_id: str = None):
         return {"connected": False}
     except:
         return {"connected": False}
+
+@app.post("/api/google/sync-calendar")
+def sync_google_calendar(user_id: str = None):
+    uid = get_user_id(user_id)
+    ensure_google_tokens_table()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Fetch timetable slots
+        cursor.execute("SELECT id, subject, title, day_of_week, time_start, time_end, room, professor FROM schedule_events WHERE user_id=?", (uid,))
+        events = cursor.fetchall()
+        
+        # Fetch deadlines
+        cursor.execute("SELECT id, title, due_at FROM deadlines WHERE user_id=?", (uid,))
+        deadlines = cursor.fetchall()
+        conn.close()
+        
+        event_list = [dict(ev) for ev in events]
+        deadline_list = [dict(dl) for dl in deadlines]
+        total_items = len(event_list) + len(deadline_list)
+        
+        token = get_valid_google_token(uid)
+        if not token:
+            # Simulated sync for sandbox
+            return {
+                "status": "simulated",
+                "message": f"Offline simulated sync: synced {len(event_list)} classes and {len(deadline_list)} deadlines to Google Calendar! 🗓️",
+                "count": total_items,
+                "events": event_list
+            }
+            
+        import urllib.request
+        from datetime import datetime, timedelta
+        
+        # 1. Clean up previously synced Kora events/deadlines to avoid duplicates
+        try:
+            list_url = "https://www.googleapis.com/calendar/v3/calendars/primary/events?privateExtendedProperty=kora_sync%3Dtrue"
+            req_list = urllib.request.Request(list_url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req_list, timeout=10) as r:
+                existing_events = json.loads(r.read()).get("items", [])
+            for ex_ev in existing_events:
+                try:
+                    del_url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{ex_ev['id']}"
+                    req_del = urllib.request.Request(del_url, headers={"Authorization": f"Bearer {token}"}, method="DELETE")
+                    with urllib.request.urlopen(req_del, timeout=5) as _:
+                        pass
+                except Exception as del_err:
+                    print(f"[Google Calendar] Failed to delete event {ex_ev['id']}: {del_err}")
+        except Exception as list_err:
+            print(f"[Google Calendar] Failed to list existing events: {list_err}")
+            
+        # 2. Sync academic classes
+        synced_count = 0
+        today = datetime.now()
+        day_mapping = {0: "MO", 1: "TU", 2: "WE", 3: "TH", 4: "FR", 5: "SA", 6: "SU"}
+        
+        for ev in event_list:
+            try:
+                day_of_week = ev.get("day_of_week", 0)
+                time_start_str = ev.get("time_start", "09:00")
+                time_end_str = ev.get("time_end", "10:00")
+                
+                # Calculate first occurrence date
+                delta_days = day_of_week - today.weekday()
+                if delta_days < 0:
+                    delta_days += 7
+                first_date = today + timedelta(days=delta_days)
+                
+                # Create start and end datetimes
+                h_start, m_start = map(int, time_start_str.split(":"))
+                h_end, m_end = map(int, time_end_str.split(":"))
+                
+                start_dt = datetime(first_date.year, first_date.month, first_date.day, h_start, m_start)
+                end_dt = datetime(first_date.year, first_date.month, first_date.day, h_end, m_end)
+                
+                byday = day_mapping.get(day_of_week, "MO")
+                
+                body = {
+                    "summary": f"{ev['subject'].upper()}: {ev['title']}",
+                    "description": f"Room: {ev.get('room', 'N/A')}\nProfessor: {ev.get('professor', 'N/A')}\nSynced via Kora.",
+                    "start": {
+                        "dateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "timeZone": "Asia/Kolkata"
+                    },
+                    "end": {
+                        "dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "timeZone": "Asia/Kolkata"
+                    },
+                    "recurrence": [
+                        f"RRULE:FREQ=WEEKLY;BYDAY={byday}"
+                    ],
+                    "extendedProperties": {
+                        "private": {
+                            "kora_sync": "true",
+                            "kora_event_id": str(ev["id"])
+                        }
+                    }
+                }
+                
+                req_insert = urllib.request.Request(
+                    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                    data=json.dumps(body).encode(),
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req_insert, timeout=10) as r_ins:
+                    json.loads(r_ins.read())
+                synced_count += 1
+            except Exception as ins_err:
+                print(f"[Google Calendar] Failed to insert event {ev.get('id')}: {ins_err}")
+                
+        # 3. Sync deadlines
+        for dl in deadline_list:
+            try:
+                due_at_str = dl.get("due_at", "")
+                if not due_at_str:
+                    continue
+                try:
+                    due_dt = datetime.fromisoformat(due_at_str.replace("Z", ""))
+                except Exception:
+                    due_dt = datetime.strptime(due_at_str[:19], "%Y-%m-%d %H:%M:%S")
+                
+                body = {
+                    "summary": f"⏰ DEADLINE: {dl['title']}",
+                    "description": "Academic deadline synced via Kora.",
+                    "start": {
+                        "dateTime": due_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "timeZone": "Asia/Kolkata"
+                    },
+                    "end": {
+                        "dateTime": (due_dt + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+                        "timeZone": "Asia/Kolkata"
+                    },
+                    "extendedProperties": {
+                        "private": {
+                            "kora_sync": "true",
+                            "kora_deadline_id": str(dl["id"])
+                        }
+                    }
+                }
+                req_insert = urllib.request.Request(
+                    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                    data=json.dumps(body).encode(),
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req_insert, timeout=10) as r_ins:
+                    json.loads(r_ins.read())
+                synced_count += 1
+            except Exception as dl_err:
+                print(f"[Google Calendar] Failed to insert deadline {dl.get('id')}: {dl_err}")
+                
+        return {
+            "status": "synced",
+            "message": f"Successfully synced {synced_count} classes and deadlines to Google Calendar! ✅",
+            "count": synced_count,
+            "events": event_list
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3192,16 +3900,9 @@ async def create_gmail_draft(req: GmailDraftRequest):
     uid = get_user_id(req.user_id)
     ensure_google_tokens_table()
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT access_token FROM google_tokens WHERE user_id=?", (uid,))
-    row = cursor.fetchone()
-    conn.close()
-    
-    if not row:
+    access_token = get_valid_google_token(uid)
+    if not access_token:
         raise HTTPException(status_code=400, detail="Gmail connection required. Please connect Gmail in settings.")
-        
-    access_token = row["access_token"]
     
     try:
         from email.mime.text import MIMEText
@@ -3518,6 +4219,112 @@ async def upload_course_material(
         "chunk_count": chunk_count,
         "chars_extracted": len(extracted_text),
         "message": f"Successfully indexed '{filename}' ({chunk_count} text chunks). Ask Kora anything about it!"
+    }
+
+@app.post("/api/study/ocr")
+async def ocr_whiteboard_slide(
+    file: UploadFile = File(...),
+    user_id: str = Form(None),
+    target: str = Form("flashcards")
+):
+    uid = get_user_id(user_id)
+    file_bytes = await file.read()
+    filename = file.filename or "whiteboard.jpg"
+    content_type = file.content_type or "image/jpeg"
+    
+    try:
+        model = get_gemini_model()
+        prompt = """
+        You are Kora's whiteboard and lecture slide scanner.
+        Analyze the uploaded whiteboard photo or lecture slide image.
+        1. Extract the key academic concepts and notes from the slide, and format them as a brief structured summary.
+        2. Generate exactly 3 to 5 high-quality, challenging flashcards for testing this slide's material.
+        
+        Return ONLY a strictly valid JSON object containing:
+        - "summary": A string containing the core structured notes and academic summary.
+        - "flashcards": A list of objects, each with:
+            - "front": A string representing the front of the flashcard (the question).
+            - "back": A string representing the back of the flashcard (the answer).
+            
+        Ensure the JSON is strictly valid. Do not write markdown formatting outside of a ```json ``` block.
+        """
+        response = model.generate_content([
+            {"mime_type": content_type, "data": file_bytes},
+            prompt
+        ])
+        
+        res_text = response.text.strip()
+        if "```json" in res_text:
+            res_text = res_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in res_text:
+            res_text = res_text.split("```")[1].split("```")[0].strip()
+            
+        data = json.loads(res_text)
+    except Exception as e:
+        print("Error in multimodal OCR:", e)
+        # Sandbox offline fallback
+        data = {
+            "summary": "Sandbox offline summary of whiteboard notes regarding operating system process scheduling state transitions.",
+            "flashcards": [
+                {"front": "What are the three primary states of a process?", "back": "Ready, Running, and Blocked (Waiting)."},
+                {"front": "Which scheduler controls the transition from Ready to Running state?", "back": "The short-term scheduler (or CPU dispatcher)."},
+                {"front": "What event causes a process to transition from Running to Blocked?", "back": "An I/O request or wait event."}
+            ]
+        }
+        
+    summary_content = data.get("summary", "")
+    
+    if target == "brain":
+        from agents import upsert_memory_node
+        import os
+        import re
+        
+        # Standardize filename for path
+        safe_filename = re.sub(r'[^a-zA-Z0-9_\.-]', '_', filename)
+        relative_path = f"source_trees/whiteboard_{safe_filename}.md"
+        
+        vault_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory_vault")
+        full_path = os.path.join(vault_dir, relative_path.replace("/", os.sep))
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        # Write structured markdown node
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(f"# Whiteboard Scan: {filename}\n\n{summary_content}\n")
+            
+        upsert_memory_node(uid, "source_tree", f"Whiteboard: {filename}", "notes", relative_path, summary_content[:200])
+        
+        return {
+            "summary": summary_content,
+            "flashcards": [],
+            "count": 0
+        }
+        
+    # Save the generated flashcards to the database
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    saved_cards = []
+    for fc in data.get("flashcards", []):
+        card_id = f"fc_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:6]}"
+        subject = "OCR Scanner"
+        cursor.execute("""
+        INSERT INTO flashcards (id, user_id, subject, front, back)
+        VALUES (?, ?, ?, ?, ?)
+        """, (card_id, uid, subject, fc["front"], fc["back"]))
+        saved_cards.append({
+            "id": card_id,
+            "subject": subject,
+            "front": fc["front"],
+            "back": fc["back"]
+        })
+        
+    conn.commit()
+    conn.close()
+    
+    return {
+        "summary": summary_content,
+        "flashcards": saved_cards,
+        "count": len(saved_cards)
     }
 
 @app.get("/api/study/materials")
